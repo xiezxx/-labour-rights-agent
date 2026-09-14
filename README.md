@@ -1,6 +1,6 @@
 # 劳动维权咨询 Agent —— 作品集演示项目
 
-面向 **AI Agent 应用开发**的完整演示：同一劳动法咨询业务的**四种实现对照**——手写 ReAct 循环版（v1）、LangGraph 编排版（v2）、LangGraph + 跨进程记忆 + 人在环审批版（v3）、流水线基线版，外加一套**可自动验证的 Agent 评测**。
+面向 **AI Agent 应用开发**的完整演示：同一劳动法咨询业务的**四种实现对照**——手写 ReAct 循环版（v1）、LangGraph 编排版（v2）、LangGraph + 跨进程记忆 + 人在环审批版（v3）、流水线基线版；外加**可自动验证的 Agent 评测**与**可观测性/成本核算**。
 
 
 ## 项目结构
@@ -10,6 +10,7 @@ labour-agent-demo/
 ├── labour_agent.py        # v1：手写 ReAct 循环 + Function Calling + 4 工具（零框架依赖）
 ├── langgraph_agent.py     # v2：LangGraph StateGraph 编排（工具实现直接复用 v1）
 ├── agent_hitl.py          # v3：多轮记忆（Sqlite 检查点）+ 人在环审批（interrupt）
+├── observability.py       # 可观测性：本地追踪 + token/成本核算（可切换 LangSmith）
 ├── agent_eval.py          # 评测：11 案 × 2 架构，客观指标自动打分（测试集内置于此文件）
 ├── eval_results.json      # 评测明细输出（含双方完整答案，可复核）
 └── README.md
@@ -30,6 +31,10 @@ cp .env.example .env    # 填入 DeepSeek / OpenAI 兼容 API Key
 # v3：多轮记忆 + 人在环审批（--thread 即记忆单元）
 .venv/Scripts/python agent_hitl.py --thread demo --demo            # 报案情 → 审批 → 生成文书 → 追问
 .venv/Scripts/python agent_hitl.py --thread demo --show-memory     # 查看该线程的记忆内容
+
+# v4：可观测性（token 用量 + 成本核算，追加任何一版都可用）
+.venv/Scripts/python agent_hitl.py --thread demo --trace --question "公司拖欠我3年工资还能要回来吗？"
+.venv/Scripts/python observability.py                              # 自检（不调用 LLM）
 ```
 
 去掉 `--demo` 即为交互模式，可多轮追问。
@@ -124,7 +129,55 @@ def review_draft(state):
 1. **否决后必须补工具回执**：历史里若留下"调用过但无 ToolMessage 回应"的 `tool_call`，再调 LLM 会被 API 直接拒绝。所以否决时要为整批 `tool_call_id` 补一条"操作被用户否决，未执行"的 `ToolMessage`。
 2. **`interrupt()` 恢复后节点从头重跑**：所以 interrupt 之前的代码必须幂等——不能有副作用（写文件、发请求）。
 
-## 四、评测：Agent 版 vs 流水线版（`agent_eval.py`）
+## 四、可观测性：本地追踪 + 成本核算（`observability.py`）
+
+生产环境的 Agent 必须能回答三个问题：**花了多少钱、慢在哪一步、哪次调用失败了**。
+
+`observability.py` 提供 `TraceCollector`（继承 `BaseCallbackHandler`），**零外部依赖、零账号**，
+挂到任意一版上即可采集：
+
+```bash
+.venv/Scripts/python agent_hitl.py --thread demo --trace --question "公司拖欠我3年工资还能要回来吗？"
+```
+
+实测输出（真实数据）：
+
+```
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+📈 可观测性报告（线程「trace-test-01」单次提问）
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  LLM 调用     2 次   累计 19.17s   平均 9.59s   最慢 10.11s
+  工具调用     2 次   check_arbitration_deadline×1、ask_user×1
+  Token 用量   输入 2,859（缓存命中 2,560 / 未命中 299）+ 输出 1,003
+  估算成本     ¥0.0070   单价口径：deepseek-v4-pro（命中 0.025/未命中 3.0/输出 6.0 元每百万 tokens）
+  异常         0 次
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+```
+
+**采集到的关键信息：**
+
+| 维度 | 内容 |
+|---|---|
+| LLM | 调用次数、每次耗时、平均/最慢、输入输出 token（**区分缓存命中与未命中**） |
+| 工具 | 每次调用的工具名、耗时、返回长度、异常 |
+| 成本 | 按时段与缓存命中率核算，单价可被环境变量覆盖 |
+| 汇总 | 控制台报告 + 追加写入 `trace_log.jsonl`（便于离线分析） |
+
+**为什么自己做而不只依赖 LangSmith：**
+
+1. **零账号零外网**：本地即可用，离线/内网演示不受限（也是这个 demo 能直接跑起来的前提）
+2. **成本口径可控**：DeepSeek 缓存命中价只有未命中的 1/120（0.025 vs 3.0），不区分命中率的成本核算会严重高估；上面的实测就显示 90% 输入走了缓存
+3. **理解了回调机制，接平台只是多一个 callback**——本地采到的指标口径定义清楚了，才知道该看平台的哪个面板
+
+**接入 LangSmith（可选，两行配置）**：把 `.env.example` 里的 `LANGSMITH_TRACING` / `LANGSMITH_API_KEY`
+取消注释即可——LangChain 会自动开启云端追踪，与本地 `TraceCollector` **同时生效互不冲突**
+（因为显式 callback 与全局自动追踪是两条独立通道）。
+注意两点：① 开启后追踪数据会上传云端（数据离开本机），自行权衡；② LangSmith 在境外需配 `HTTPS_PROXY`。
+
+> 单价说明：`PRICE_TABLE` 是 2026-09 检索到的公开价目（元/百万 tokens），仅用于**成本量级估算**；
+> 厂商会调价、也有峰谷分时计价，请以实际账单为准，可用 `LLM_PRICE_*` 环境变量覆盖。
+
+## 五、评测：Agent 版 vs 流水线版（`agent_eval.py`）
 
 **为什么不用 LLM-as-judge**：Agent 评测是行业公认难题（行为不确定、路径不唯一），而 LLM 评委本身不可靠。本评测全部用**可客观验证的指标**：
 
@@ -139,7 +192,7 @@ def review_draft(state):
 
 **测试集覆盖**（10 案）：信息不全的违法辞退（应追问）、信息齐全的违法辞退（不应追问，检验过度提问）、拖欠工资时效、未签合同双倍工资、主动辞职、加班费、试用期辞退、N+1 计算、协商解除、知识边界（迷你库无工伤条例，检验是否编造条文号）。
 
-## 五、评测结果（11 案 × 2 架构，2026-09-14 实测）
+## 六、评测结果（11 案 × 2 架构，2026-09-14 实测）
 
 | 指标 | Agent 版 | 流水线版 | 说明 |
 |---|---|---|---|
@@ -185,7 +238,7 @@ C06（加班费）中，流水线引用《劳动法》第 44 条——**真实�
 1. **多 Agent 分工**：检索 Agent + 计算 Agent + 文书生成 Agent 的 supervisor 编排
 2. **记忆治理**：长对话的消息裁剪/摘要（避免历史无限增长撑爆上下文）、跨 thread 的用户画像
 3. **接入真实检索**：把 `search_law` 换成论文项目的混合检索（BM25 + 向量 + 知识图谱），可直接复用于论文系统的 Agentic 升级
-4. **可观测性**：接入 LangSmith / OpenTelemetry 追踪每次工具调用与 token 成本（生产 Agent 必备）
+4. **评测补强**：给 `agent_eval.py` 也挂上 `TraceCollector`，把每案的 token 成本纳入评测报表
 
 ## 说明
 

@@ -2,3 +2,4 @@
 .env
 __pycache__/
 agent_memory.sqlite
+trace_log.jsonl

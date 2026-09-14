@@ -87,6 +87,7 @@ from labour_agent import (
     check_arbitration_deadline as _check_deadline,
     search_law as _search_law,
 )
+from observability import TraceCollector
 
 API_KEY = os.getenv("OPENAI_API_KEY", "")
 BASE_URL = os.getenv("OPENAI_BASE_URL", "https://api.deepseek.com")
@@ -334,11 +335,13 @@ def _prompt_approval(payload: dict, scripted=None) -> dict:
     return {"approved": False, "feedback": ans}
 
 
-def run_turn(thread_id: str, question: str, scripted_approvals=None, verbose: bool = True) -> dict:
+def run_turn(thread_id: str, question: str, scripted_approvals=None, verbose: bool = True,
+             callbacks: list = None) -> dict:
     """执行一轮对话（同一 thread_id = 同一份持久记忆）"""
     global VERBOSE
     VERBOSE = verbose
-    config = {"configurable": {"thread_id": thread_id}, "recursion_limit": RECURSION_LIMIT}
+    config = {"configurable": {"thread_id": thread_id}, "recursion_limit": RECURSION_LIMIT,
+              "callbacks": callbacks or []}  # 可观测性回调在此注入，与检查点互不影响
 
     # —— 记忆恢复：检查点里已有历史就不必再塞 system prompt ——
     snapshot = graph.get_state(config)
@@ -415,6 +418,8 @@ def main():
     parser.add_argument("--approve", choices=["yes", "no"], default="yes",
                         help="--demo 模式下的自动审批决定")
     parser.add_argument("--show-memory", action="store_true", help="打印该线程的记忆内容")
+    parser.add_argument("--trace", action="store_true",
+                        help="开启可观测性：采集 LLM/工具调用、token 与成本，结束时输出报告")
     args = parser.parse_args()
 
     print("=" * 62)
@@ -431,23 +436,35 @@ def main():
 
     global SCRIPTED_ANSWERS
 
+    collector = TraceCollector(model=MODEL) if args.trace else None
+    cbs = [collector] if collector else None
+    if collector:
+        print(f"📈 可观测性已开启：单价口径 {collector.model}，"
+              + ("（当前为高峰计价时段）" if collector.peak else "（当前为非高峰时段）"))
+
     if args.demo:
         SCRIPTED_ANSWERS = list(DEMO_ANSWERS)
         scripted_approvals = [{"approved": args.approve == "yes",
                                "feedback": "" if args.approve == "yes" else "赔偿金额计算依据再补充一下"}]
-        run_turn(args.thread, DEMO_QUESTION, scripted_approvals=scripted_approvals)
+        run_turn(args.thread, DEMO_QUESTION, scripted_approvals=scripted_approvals, callbacks=cbs)
         # 第二轮：换问题但不重述案情，检验记忆是否生效
         print("\n\n" + "=" * 62)
         print("  🧠 记忆检验：第二轮换问题，不重述案情")
         print("=" * 62)
         SCRIPTED_ANSWERS = []
-        run_turn(args.thread, "那仲裁时效是多久？我这种情况还来得及吗？")
+        run_turn(args.thread, "那仲裁时效是多久？我这种情况还来得及吗？", callbacks=cbs)
+        if collector:
+            collector.print_report(f"线程「{args.thread}」本次演示")
+            print(f"📄 明细已追加写入 {collector.dump().name}")
         print("\n💡 跨进程记忆验证：另开一次运行，同一 --thread 换问题即可：")
         print(f'   .venv/Scripts/python agent_hitl.py --thread {args.thread} --question "我的工龄是几年？"')
         return
 
     if args.question:
-        run_turn(args.thread, args.question)
+        run_turn(args.thread, args.question, callbacks=cbs)
+        if collector:
+            collector.print_report(f"线程「{args.thread}」单次提问")
+            print(f"📄 明细已追加写入 {collector.dump().name}")
         return
 
     # 交互模式
@@ -462,7 +479,10 @@ def main():
         if q == "/memory":
             print_memory(args.thread)
             continue
-        run_turn(args.thread, q)
+        run_turn(args.thread, q, callbacks=cbs)
+    if collector:
+        collector.print_report(f"线程「{args.thread}」本次会话累计")
+        print(f"📄 明细已追加写入 {collector.dump().name}")
     print("👋 再见（记忆已保存，下次用同一 --thread 可继续）")
 
 
