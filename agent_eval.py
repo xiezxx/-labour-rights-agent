@@ -223,38 +223,51 @@ def run_agent(case: dict) -> dict:
 # ════════════════════════════════════════════════════════════════
 _CN_DIGITS = {"零": 0, "一": 1, "二": 2, "两": 2, "三": 3, "四": 4,
               "五": 5, "六": 6, "七": 7, "八": 8, "九": 9}
+_CN_UNITS = {"十": 10, "百": 100, "千": 1000}
 
 
 def _cn2int(s: str):
-    """中文数字转整数：八十七→87、四十四→44、一百零七→107、十→10"""
+    """中文数字转整数：八十七→87、一百零七→107、一千二百→1200
+
+    按"数字+单位"逐位累加，能正确处理含"零"的多位数
+    （旧实现"一百零七"会算成 100——尾部被 None or 0 吃掉）。
+    """
     if not s:
         return None
-    if "百" in s:
-        head, _, tail = s.partition("百")
-        hundreds = _CN_DIGITS.get(head, 1 if head == "" else 0) * 100
-        return hundreds + (_cn2int(tail) or 0 if tail else 0)
-    if "十" in s:
-        head, _, tail = s.partition("十")
-        tens = _CN_DIGITS.get(head, 1) if head else 1
-        ones = _CN_DIGITS.get(tail, 0) if tail else 0
-        return tens * 10 + ones
-    if len(s) == 1:
-        return _CN_DIGITS.get(s)
-    return None
+    if s.isdigit():
+        return int(s)
+    section = number = 0
+    for ch in s:
+        if ch in _CN_DIGITS:
+            number = _CN_DIGITS[ch]
+        elif ch in _CN_UNITS:
+            section += (number or 1) * _CN_UNITS[ch]
+            number = 0
+        else:
+            return None
+    return section + number
 
 
-_NUM_PAT = r"(\d+|[零一二两三四五六七八九十百]+)"
+_NUM_PAT = r"(\d+|[零一二两三四五六七八九十百千]+)"
 
 
 def _extract_citations(answer: str) -> list:
-    """抽取法条引用，规范化为 (法律名或None, 条号字符串)；兼容中文数字条号"""
+    """抽取法条引用，规范化为 (法律名或None, 条号字符串)；兼容中文数字条号。
+
+    实现要点：先把"《法律名》第X条"整体**摘除**再抽裸条号，避免用位置断言去重——
+    旧写法 `(?<![》\\s])` 会把"换行/项目符号后的裸条号"整条漏抽（漏抽只缩小分母，
+    会系统性高估引用可验证率），且"《X》 第87条"（书名号后有空格）仍会重复计数。
+    """
     cites = []
-    for law, num in re.findall(r"《([^》]{2,30})》\s*第\s*" + _NUM_PAT + r"\s*条", answer):
-        n = num if num.isdigit() else _cn2int(num)
+
+    def take_law(m):
+        n = m.group(2) if m.group(2).isdigit() else _cn2int(m.group(2))
         if n is not None:
-            cites.append((law, str(n)))
-    # 裸条号（前面不是书名号或空白），避免与带法律名的引用重复计数
-    for num in re.findall(r"(?<![》\s])第\s*" + _NUM_PAT + r"\s*条", answer):
+            cites.append((m.group(1), str(n)))
+        return " "  # 摘除，下面不再重复计数
+
+    remainder = re.sub(r"《([^》]{2,40})》\s*第\s*" + _NUM_PAT + r"\s*条", take_law, answer)
+    for num in re.findall(r"第\s*" + _NUM_PAT + r"\s*条", remainder):
         n = num if num.isdigit() else _cn2int(num)
         if n is not None:
             cites.append((None, str(n)))

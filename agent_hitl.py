@@ -239,16 +239,26 @@ def repair_dangling_tool_calls(messages: list) -> list:
     """
     answered = {m.tool_call_id for m in messages if isinstance(m, ToolMessage)}
     repaired = []
-    for m in messages:
+    i, n = 0, len(messages)
+    while i < n:
+        m = messages[i]
         repaired.append(m)
-        if isinstance(m, AIMessage):
-            for tc in getattr(m, "tool_calls", None) or []:
+        if isinstance(m, AIMessage) and getattr(m, "tool_calls", None):
+            # 先原样保留紧随其后的已有回执（不打乱顺序），再在同一位置补齐缺失的回执
+            j = i + 1
+            while j < n and isinstance(messages[j], ToolMessage):
+                repaired.append(messages[j])
+                j += 1
+            for tc in m.tool_calls:
                 if tc["id"] not in answered:
                     repaired.append(ToolMessage(
                         content="（该工具调用未执行完成——可能因循环步数上限或人工审批中断，未产生结果）",
                         tool_call_id=tc["id"],
                     ))
                     answered.add(tc["id"])
+            i = j
+            continue
+        i += 1
     return repaired
 
 

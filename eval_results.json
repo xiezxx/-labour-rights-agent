@@ -334,8 +334,8 @@
       "tool_recall": 1.0,
       "clarify_ok": null,
       "amount_ok": null,
-      "cite_rate": 0.6666666666666666,
-      "cite_total": 3,
+      "cite_rate": 0.75,
+      "cite_total": 4,
       "art_recall": 1.0,
       "latency": 22.550562143325806,
       "n_tools": 3
