@@ -60,6 +60,9 @@ from typing import Annotated, Literal
 
 try:
     sys.stdout.reconfigure(encoding="utf-8")
+    # stdin 也要显式指定：管道/IDE 运行窗口下若按 Windows 默认 GBK 解码，
+    # 中文输入会产生 lone surrogate 字符，后续打印直接抛 UnicodeEncodeError
+    sys.stdin.reconfigure(encoding="utf-8", errors="replace")
 except Exception:
     pass
 

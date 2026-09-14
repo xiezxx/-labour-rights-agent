@@ -36,6 +36,8 @@ from typing import Annotated, Literal
 
 try:
     sys.stdout.reconfigure(encoding="utf-8")
+    # stdin 同样显式指定，避免管道/IDE 下中文输入按 GBK 解码产生 surrogate 字符
+    sys.stdin.reconfigure(encoding="utf-8", errors="replace")
 except Exception:
     pass
 

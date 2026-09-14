@@ -38,6 +38,8 @@ from pathlib import Path
 
 try:
     sys.stdout.reconfigure(encoding="utf-8")  # Windows 控制台中文输出
+    # stdin 同样显式指定，避免管道/IDE 下中文输入按 GBK 解码产生 surrogate 字符
+    sys.stdin.reconfigure(encoding="utf-8", errors="replace")
 except Exception:
     pass
 
