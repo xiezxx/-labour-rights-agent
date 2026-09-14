@@ -42,7 +42,7 @@ SCRIPT_DIR = Path(__file__).resolve().parent
 RESULTS_PATH = SCRIPT_DIR / "eval_results.json"
 
 # ════════════════════════════════════════════════════════════════
-# 1. 测试集：10 个标准案情（覆盖各类工具路径与边界）
+# 1. 测试集：11 个标准案情（覆盖各类工具路径与边界）
 # ════════════════════════════════════════════════════════════════
 CASES = [
     {
@@ -174,9 +174,21 @@ PIPELINE_PROMPT = """你是一名劳动法律师，请基于以下检索到的�
 
 要求：先结论后分析，引用法条写明《法律名》第X条，涉及金额给出计算公式，结尾提醒仅供参考。"""
 
-_pipeline_llm = ChatOpenAI(
-    model=lg.MODEL, api_key=lg.API_KEY, base_url=lg.BASE_URL, temperature=0.2
-)
+_PIPELINE_LLM = None
+
+
+def _pipeline_llm():
+    """懒加载流水线基线用的 LLM。
+
+    不在 import 时构造，这样 `--rescore`（纯离线重算指标）无需配置 API Key 也能用，
+    全新 clone 也不会因为缺 .env 而连模块都导不进来。
+    """
+    global _PIPELINE_LLM
+    if _PIPELINE_LLM is None:
+        _PIPELINE_LLM = ChatOpenAI(
+            model=lg.MODEL, api_key=lg.API_KEY, base_url=lg.BASE_URL, temperature=0.2
+        )
+    return _PIPELINE_LLM
 
 
 def run_pipeline(case: dict) -> dict:
@@ -184,7 +196,7 @@ def run_pipeline(case: dict) -> dict:
     t0 = time.time()
     context = _search_law(case["question"])
     facts = "；".join(case["scripted_answers"]) if case["scripted_answers"] else "（无）"
-    resp = _pipeline_llm.invoke(PIPELINE_PROMPT.format(
+    resp = _pipeline_llm().invoke(PIPELINE_PROMPT.format(
         context=context, facts=facts, question=case["question"]
     ))
     return {

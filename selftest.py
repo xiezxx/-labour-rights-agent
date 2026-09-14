@@ -47,7 +47,9 @@ def check_deps():
         "langchain-openai": "LLM 封装",
         "langchain-core": "回调机制",
         "langgraph-checkpoint-sqlite": "跨进程记忆",
-        "langsmith": "可选：云端追踪（本地追踪不依赖它）",
+    }
+    optional = {
+        "langsmith": "可选：LangSmith 云端追踪（本地 --trace 追踪不依赖它）",
     }
     for pkg, why in required.items():
         try:
@@ -55,6 +57,12 @@ def check_deps():
         except meta.PackageNotFoundError:
             print(f"{FAIL} {pkg} 未安装   （{why}）")
             problems.append(f"缺少依赖 {pkg}，执行：pip install {pkg}")
+    for pkg, why in optional.items():
+        try:
+            print(f"{OK} {pkg} {meta.version(pkg)}   （{why}）")
+        except meta.PackageNotFoundError:
+            # 可选依赖缺失只提示、不计入失败（本地追踪与其余功能都不受影响）
+            print(f"{WARN}{pkg} 未安装   （{why}——不影响本地功能）")
 
 
 def check_env():

@@ -44,7 +44,7 @@ cd "D:/My wordl four/labour-agent-demo"
 .venv/Scripts/python agent_hitl.py --thread demo-reject --demo --approve no --trace
 ```
 
-Agent 会收到"赔偿金额计算依据再补充一下"这条意见，重新检索法条补强依据，然后再次请你审批。
+Agent 会收到"赔偿金额计算依据再补充一下"这条意见，重新检索法条补强依据，然后**再次触发审批**（脚本会作出第二次决定：批准，于是生成补上计算依据的修订版文书）。整条链路是：否决 → 补工具回执 → 带意见重做 → 二次批准。
 
 ---
 
@@ -99,16 +99,17 @@ Agent 会收到"赔偿金额计算依据再补充一下"这条意见，重新检
 
 ---
 
-## 第 4 步：跑评测（约 10 分钟，会花几毛钱）
+## 第 4 步：跑评测（串行执行约 16 分钟，会花几毛钱）
 
 ```bash
 .venv/Scripts/python agent_eval.py                 # 全量 11 案 × 2 架构
-.venv/Scripts/python agent_eval.py --case C01       # 只跑一个用例（快，约 1 分钟）
+.venv/Scripts/python agent_eval.py --case C01 --merge  # 只跑一个用例（约 1 分钟）并合并进已有结果
 .venv/Scripts/python agent_eval.py --rescore        # 只重算指标，不调 LLM（不花钱）
 ```
 
 预期：C01 用例 Agent 版应拿到"工具召回 100% / 反问 ✅ / 金额 ✅ / 引用可验证 100%"。
 明细写入 `eval_results.json`（含双方完整答案，可逐条复核）。
+**注意**：不加 `--merge` 的 `--case` 运行会覆盖该文件，导致其余用例的明细丢失。
 
 > 改过打分逻辑后，**先用 `--rescore` 离线重算**验证口径，别急着重跑全量。
 
@@ -157,7 +158,7 @@ A：各脚本顶部都有 `sys.stdout.reconfigure(encoding="utf-8")`，正常情
 
 **Q：想清空记忆从头开始？**
 A：删掉 `agent_memory.sqlite` 即全部清空；只想清一个会话就换 `--thread` 名字。清追踪日志删 `trace_log.jsonl`。
-（两个文件都在 `.gitignore` 里，不会进仓库。）
+（两个文件连同 SQLite 的 `-wal`/`-shm` 边车文件都在 `.gitignore` 里，不会进仓库。）
 
 **Q：模型名怎么改？**
 A：编辑 `.env` 的 `OPENAI_MODEL`。换模型后记得核对 `observability.py` 里 `PRICE_TABLE` 的单价，或用 `LLM_PRICE_*` 环境变量覆盖。

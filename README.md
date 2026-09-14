@@ -28,19 +28,22 @@ cp .env.example .env    # 填入 DeepSeek / OpenAI 兼容 API Key
 .venv/Scripts/python selftest.py                      # ① 先跑环境自检（依赖/配置/API 是否就绪）
 .venv/Scripts/python labour_agent.py --demo           # v1 手写循环版，脚本演示
 .venv/Scripts/python langgraph_agent.py --demo        # v2 LangGraph 版，脚本演示
-.venv/Scripts/python agent_eval.py                    # 评测（11 案情 × 2 架构，约 10 分钟）
-.venv/Scripts/python agent_eval.py --rescore          # 只重算指标，不调用 LLM（改打分口径时用）
+.venv/Scripts/python agent_eval.py                    # 评测（11 案情 × 2 架构，串行执行约 16 分钟）
+.venv/Scripts/python agent_eval.py --rescore          # 只重算指标，不调 LLM（无需 API Key）
+.venv/Scripts/python agent_eval.py --case C01 --merge  # 单跑一个用例并合并进已有结果
 
 # v3：多轮记忆 + 人在环审批（--thread 即记忆单元）
 .venv/Scripts/python agent_hitl.py --thread demo --demo            # 报案情 → 审批 → 生成文书 → 追问
 .venv/Scripts/python agent_hitl.py --thread demo --show-memory     # 查看该线程的记忆内容
 
-# v4：可观测性（token 用量 + 成本核算，追加任何一版都可用）
+# v4：可观测性（token 用量 + 成本核算；目前仅 v3 接入回调，v1 用原生 SDK 无法挂载）
 .venv/Scripts/python agent_hitl.py --thread demo --trace --question "公司拖欠我3年工资还能要回来吗？"
 .venv/Scripts/python observability.py                              # 自检（不调用 LLM）
 ```
 
 去掉 `--demo` 即为交互模式，可多轮追问。**完整的测试步骤、演示脚本与常见问题见 [TESTING.md](TESTING.md)。**
+
+> ⚠️ `agent_eval.py --case X` 会**覆盖** `eval_results.json`（跑完只剩该用例），想保留其余结果请加 `--merge`。
 
 ## 一、v1 手写循环版（`labour_agent.py`）
 
@@ -137,13 +140,15 @@ def review_draft(state):
 生产环境的 Agent 必须能回答三个问题：**花了多少钱、慢在哪一步、哪次调用失败了**。
 
 `observability.py` 提供 `TraceCollector`（继承 `BaseCallbackHandler`），**零外部依赖、零账号**，
-挂到任意一版上即可采集：
+挂进图调用的 `config["callbacks"]` 即可采集。
+（当前只有 v3 接好了开关；v2 需给 `run_turn` 加 callbacks 参数，v1 走原生 OpenAI SDK、不经过
+LangChain 回调链，需要自行改造才能挂载。）
 
 ```bash
 .venv/Scripts/python agent_hitl.py --thread demo --trace --question "公司拖欠我3年工资还能要回来吗？"
 ```
 
-实测输出（真实数据）：
+实测输出（真实数据；节选——完整报告还会多打印「工具耗时 Top3」与单价说明两行）：
 
 ```
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━

@@ -124,8 +124,18 @@ def ask_user(question: str) -> str:
 
 TOOLS = [search_law, calculate_compensation, check_arbitration_deadline, ask_user]
 
-llm = ChatOpenAI(model=MODEL, api_key=API_KEY, base_url=BASE_URL, temperature=0.2)
-llm_with_tools = llm.bind_tools(TOOLS)
+# LLM 客户端懒加载：import 时不构造，否则"没有 .env 的全新 clone"连模块都导不进来
+_LLM_WITH_TOOLS = None
+
+
+def get_llm():
+    """按需构造 LLM（首次调用时初始化，之后复用）"""
+    global _LLM_WITH_TOOLS
+    if _LLM_WITH_TOOLS is None:
+        _LLM_WITH_TOOLS = ChatOpenAI(
+            model=MODEL, api_key=API_KEY, base_url=BASE_URL, temperature=0.2
+        ).bind_tools(TOOLS)
+    return _LLM_WITH_TOOLS
 
 
 # ════════════════════════════════════════════════════════════════
@@ -135,11 +145,40 @@ class AgentState(dict):
     messages: Annotated[list, add_messages]
 
 
+def repair_dangling_tool_calls(messages: list) -> list:
+    """返回补好回执的完整消息列表：为"调用了却没有结果"的 tool_call 生成占位 ToolMessage。
+
+    触及递归上限被强制中断时，消息里会留下 AIMessage(tool_calls=[...]) 却没有对应的
+    ToolMessage；此时若继续追问，历史里就出现"ai(tool_calls) → human"的非法序列，
+    下一次调用 LLM 会被 API 以 400 拒绝。
+
+    两个关键点：① 回执必须**插在该 tool_calls 消息之后**，追加到末尾仍会 400；
+    ② 只用于构造请求、不写回状态（写回会被归约器追加到末尾，位置反而是错的）。
+    """
+    answered = {m.tool_call_id for m in messages if isinstance(m, ToolMessage)}
+    repaired = []
+    for m in messages:
+        repaired.append(m)
+        if isinstance(m, AIMessage):
+            for tc in getattr(m, "tool_calls", None) or []:
+                if tc["id"] not in answered:
+                    repaired.append(ToolMessage(
+                        content="（该工具调用未执行完成——可能因循环步数上限被强制中断，未产生结果）",
+                        tool_call_id=tc["id"],
+                    ))
+                    answered.add(tc["id"])
+    return repaired
+
+
 def call_llm(state: AgentState) -> dict:
     """llm 节点：模型自主决定——继续调用工具，还是给出最终回答"""
     if VERBOSE:
         print("  ⏳ llm 节点：模型思考中…")
-    return {"messages": [llm_with_tools.invoke(state["messages"])]}
+    repaired = repair_dangling_tool_calls(state["messages"])
+    added = len(repaired) - len(state["messages"])
+    if added and VERBOSE:
+        print(f"  🩹 检测到 {added} 个无回执的工具调用，已在本次请求中补占位回执")
+    return {"messages": [get_llm().invoke(repaired)]}
 
 
 def should_continue(state: AgentState) -> str:
