@@ -300,7 +300,7 @@ _KB_ALL_NUMS = {n for nums in _KB.values() for n in nums}
 
 
 def _extract_amounts(text: str) -> list:
-    """抽取答案中的金额，支持"60000元"与"6万元"两种写法"""
+    """抽取答案中的金额（宽松版，匹配任意数字；供参考/调试）"""
     out = []
     for value, unit in re.findall(r"(\d[\d,]*\.?\d*)\s*(万元|万|元)?", text):
         try:
@@ -311,6 +311,43 @@ def _extract_amounts(text: str) -> list:
             v *= 10000
         out.append(v)
     return out
+
+
+# 金额"被主张"的语境线索：只有出现在索赔/计算语境里才算答对，
+# 避免"理论上 N+1 是 22500 元，但本案不适用"这类假设性提及被判为正确
+_CLAIM_HINTS = ("应支付", "应付", "应赔偿", "应得", "赔偿金", "补偿金", "经济补偿",
+                "合计", "共计", "主张", "可得", "能拿", "可拿", "请求", "标准为",
+                "金额", "计算", "=", "N", "2N")
+# 否定线索：紧邻金额之前出现则不算主张
+_NEG_HINTS = ("不", "非", "而非", "不是", "并非", "不应", "无需", "不用", "不计")
+# 假设/对比线索：出现这些词的句子在讨论"另一种情形"，其中的金额不算本案主张
+_HYPOTHETICAL_HINTS = ("理论上", "假设", "仅供参考", "不适用", "未必", "反之", "与此不符")
+
+
+def _amount_is_claimed(answer: str, expect: float) -> bool:
+    """判断期望金额是否以"主张/计算"的口吻出现（而非被否定、或仅作假设性提及）。
+
+    逐句（按。；换行切分）判断，要求金额带单位（元/万）且满足：
+    ① 金额前面没有紧邻的否定词；② 所在句不含假设/对比线索；③ 所在句有主张/计算线索。
+    逐句而非整段窗口，是为了避免被邻近句子的"应支付"等词误判为已主张。
+    """
+    for sentence in re.split(r"[。；\n]", answer):
+        for m in re.finditer(r"(\d[\d,]*\.?\d*)\s*(万元|万|元)", sentence):
+            try:
+                val = float(m.group(1).replace(",", ""))
+            except ValueError:
+                continue
+            if m.group(2) in ("万", "万元"):
+                val *= 10000
+            if abs(val - expect) > 1.0:
+                continue
+            if sentence[:m.start()].rstrip().endswith(_NEG_HINTS):
+                continue  # 被否定，如"不是 48000 元"
+            if any(h in sentence for h in _HYPOTHETICAL_HINTS):
+                continue  # 该句在讨论假设/对比情形
+            if any(k in sentence for k in _CLAIM_HINTS):
+                return True
+    return False
 
 
 def score(case: dict, result: dict) -> dict:
@@ -327,11 +364,11 @@ def score(case: dict, result: dict) -> dict:
     asked = "ask_user" in called
     clarify_ok = None if expect_clarify is None else (asked == expect_clarify)
 
-    # 指标3：金额正确性（支持"60000元"与"6万元"）
+    # 指标3：金额正确性（要求以主张/计算的口吻出现，否定或假设性提及不算）
     expect_amount = case.get("expect_amount")
     amount_ok = None
     if expect_amount is not None:
-        amount_ok = any(abs(n - expect_amount) <= 1.0 for n in _extract_amounts(answer))
+        amount_ok = _amount_is_claimed(answer, expect_amount)
 
     # 指标4：引用可验证率（引用能否回溯到知识库；兼容中文数字条号）
     cites = _extract_citations(answer)
@@ -345,7 +382,9 @@ def score(case: dict, result: dict) -> dict:
             # 裸条号：知识库任一法律下有该条即可
             if art in _KB_ALL_NUMS:
                 valid += 1
-    cite_rate = valid / len(cites) if cites else 0.0
+    # 一条引用都没有（如"本知识库未收录"式正确拒答）记 None 而非 0：
+    # 这类回答不该因为"没引用"被扣分，aggregate() 会自动跳过 None
+    cite_rate = valid / len(cites) if cites else None
 
     # 指标5：期望法条命中（参考答案中该出现的关键条文）
     expected_articles = case.get("expected_articles") or []

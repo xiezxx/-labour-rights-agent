@@ -383,6 +383,9 @@ def run_agent(question: str, messages: list = None, canned: list = None) -> tupl
                 args = json.loads(tc.function.arguments or "{}")
             except json.JSONDecodeError:
                 args = {}
+            if not isinstance(args, dict):
+                # 模型偶发返回合法 JSON 但非对象（如 "[]"、"foo"），若不拦会在 args.get 处抛 AttributeError
+                args = {}
             print(f"  🔧 调用工具：{name}({json.dumps(args, ensure_ascii=False)})")
             result = execute_tool(name, args, canned)
             preview = result[:150].replace("\n", " ")

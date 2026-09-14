@@ -132,6 +132,48 @@ class TestAmountExtraction(unittest.TestCase):
                 self.assertIn(expect_in, ae._extract_amounts(text))
 
 
+class TestAmountIsClaimed(unittest.TestCase):
+    """金额判定：只有以"主张/计算"口吻出现才算答对（旧口径"提及即通过"太松）"""
+
+    def test_negated_amount_not_counted(self):
+        self.assertFalse(ae._amount_is_claimed("……只能拿到24000元。注意：不是48000元。", 48000))
+
+    def test_hypothetical_amount_not_counted(self):
+        self.assertFalse(ae._amount_is_claimed(
+            "公司应支付经济补偿13500元。虽然理论上N+1是22500元，但本案不适用。", 22500))
+
+    def test_claimed_amount_counted(self):
+        self.assertTrue(ae._amount_is_claimed("经计算，赔偿金应为240,000元。", 240000))
+        self.assertTrue(ae._amount_is_claimed("**赔偿金 2N = 48000 元**", 48000))
+        self.assertTrue(ae._amount_is_claimed("可主张赔偿金合计6万元", 60000))
+
+    def test_other_amounts_not_counted(self):
+        self.assertFalse(ae._amount_is_claimed("赔偿金为13500元。", 22500))
+
+    def test_bare_number_without_unit_ignored(self):
+        self.assertFalse(ae._amount_is_claimed("工龄22500天", 22500))
+
+
+class TestZeroCitationIsNotApplicable(unittest.TestCase):
+    """零引用的正确拒答应记 N/A，而不是 0 分拖低平均"""
+
+    def _score(self, answer, case=None):
+        return ae.score(case or {"expected_articles": []},
+                        {"answer": answer, "tool_calls": [], "latency": 0.0})
+
+    def test_refusal_scores_none(self):
+        self.assertIsNone(self._score("本知识库未收录相关条文，无法给出具体条文号。")["cite_rate"])
+
+    def test_normal_answer_still_scored(self):
+        self.assertEqual(self._score("依据《劳动合同法》第87条")["cite_rate"], 1.0)
+
+    def test_aggregate_skips_none(self):
+        def row(cite):
+            return {"tool_recall": 1.0, "clarify_ok": None, "amount_ok": None,
+                    "cite_rate": cite, "art_recall": None, "latency": 1.0}
+        self.assertEqual(ae.aggregate([row(1.0), row(None)])["cite_rate"], 1.0)
+
+
 class TestCompensationMonths(unittest.TestCase):
     """《劳动合同法》第47条的月数取整规则"""
 
