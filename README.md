@@ -13,7 +13,8 @@ labour-agent-demo/
 ├── observability.py       # v4：可观测性：本地追踪 + token/成本核算（可切换 LangSmith）
 ├── agent_eval.py          # 评测：11 案 × 2 架构，客观指标自动打分（测试集内置于此文件）
 ├── selftest.py            # 环境自检：一条命令确认依赖/配置/API/模块是否就绪
-├── TESTING.md             # 本地测试指南（分步测试流程、演示脚本、常见问题）
+├── test_units.py          # 22 个离线单元测试（不调 LLM、不花钱、0.03 秒）
+├── TESTING.md             # 测试指南（功能清单、分步测试、演示脚本、常见问题）
 ├── eval_results.json      # 评测明细输出（含双方完整答案，可复核）
 └── README.md
 ```
@@ -26,6 +27,7 @@ python -m venv .venv
 cp .env.example .env    # 填入 DeepSeek / OpenAI 兼容 API Key
 
 .venv/Scripts/python selftest.py                      # ① 先跑环境自检（依赖/配置/API 是否就绪）
+.venv/Scripts/python test_units.py                    # ② 22 个离线单测（0 成本、不联网）
 .venv/Scripts/python labour_agent.py --demo           # v1 手写循环版，脚本演示
 .venv/Scripts/python langgraph_agent.py --demo        # v2 LangGraph 版，脚本演示
 .venv/Scripts/python agent_eval.py                    # 评测（11 案情 × 2 架构，串行执行约 16 分钟）

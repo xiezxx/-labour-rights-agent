@@ -1,7 +1,22 @@
 # 本地测试指南
 
-给作者自己的操作手册：**怎么跑、看什么、出问题怎么办**。
+给作者自己的操作手册：**这个 Agent 能做什么、怎么跑、看什么、出问题怎么办**。
 （Windows 命令用 Git Bash 写法；PowerShell / cmd 把 `/` 换成 `\` 即可，如 `.venv\Scripts\python.exe`）
+
+---
+
+## 功能清单（先看这个）
+
+| 类别 | 能力 |
+|---|---|
+| **对话** | 自主工具调用循环（思考→调工具→看结果→再思考）；信息不足时**主动反问**而不是猜；多轮上下文理解 |
+| **工具（5 个）** | `search_law` 法条检索 · `calculate_compensation` 算 N/N+1/2N（Python 计算，不让 LLM 心算）· `check_arbitration_deadline` 仲裁时效 · `ask_user` 反问澄清 · `draft_arbitration_application` 生成仲裁申请书（**需人工审批**） |
+| **记忆** | 跨进程持久化（SqliteSaver 检查点 + `--thread` 隔离）：**关掉程序重开，Agent 还记得案情** |
+| **人在环审批** | 生成正式法律文书前用 `interrupt()` 挂起整张图等你批准；**否决会带你的意见回去重做** |
+| **可观测性** | 每次 LLM 调用的 token（区分缓存命中/未命中）、耗时、成本；每次工具调用的名字/耗时/异常 |
+| **评测** | 11 案 × 2 架构（Agent vs 流水线）× 4 项客观指标，不用 LLM 当评委，支持离线重算 |
+| **护栏** | 步数上限 · 悬空工具调用自动修补（防线程永久崩溃）· 审批 fail-closed（无人应答默认**否决**）· `ask_user` 并发加锁 |
+| **配套** | `selftest.py` 环境自检 · `test_units.py` 22 个离线单测 · `observability.py` 成本核算 · 交互式 CLI（支持 `/memory`） |
 
 ---
 
@@ -14,14 +29,28 @@ cd "D:/My wordl four/labour-agent-demo"
 
 会逐项检查 Python、依赖、`.env`、状态文件、模块导入、API 连通性，最后给出结论。
 
-- 全部 ✅ → 直接进第 1 步
+- 全部 ✅ → 继续第 1 步
 - 有 ⚠️/❌ → 按提示处理（缺依赖就 `pip install`，Key 没填就编辑 `.env`）
 
 想省掉那次 API 调用（约 ¥0.001）：`selftest.py --no-api`
 
 ---
 
-## 第 1 步：看演示怎么跑（v3 完整功能，约 1 分钟）
+## 第 1 步：跑单元测试（3 秒，0 成本，最推荐先跑）
+
+```bash
+.venv/Scripts/python test_units.py
+```
+
+**22 个测试、0.03 秒、不花钱、不联网**。覆盖那些"错了不容易发现"的纯逻辑：
+悬空工具调用修补、中文数字解析（八十七/一百零七）、法条引用抽取、
+金额主张判定（否定句/假设句不算答对）、赔偿月数取整、知识库条号格式、成本计算。
+
+预期末尾：`Ran 22 tests in 0.0Xs` + `OK`。这是最快的"代码没坏"证明。
+
+---
+
+## 第 2 步：看演示怎么跑（v3 完整功能，约 1 分钟）
 
 ```bash
 .venv/Scripts/python agent_hitl.py --thread demo-mine --demo --trace
@@ -48,7 +77,7 @@ Agent 会收到"赔偿金额计算依据再补充一下"这条意见，重新检
 
 ---
 
-## 第 2 步：验证跨进程记忆（最有说服力的一步）
+## 第 3 步：验证跨进程记忆（最有说服力的一步）
 
 **关键**：两次运行是**两个独立进程**，模拟"关掉程序明天再打开"。
 
@@ -71,7 +100,7 @@ Agent 会收到"赔偿金额计算依据再补充一下"这条意见，重新检
 
 ---
 
-## 第 3 步：交互模式（自己当用户，最真实）
+## 第 4 步：交互模式（自己当用户，最真实）
 
 ```bash
 .venv/Scripts/python agent_hitl.py --thread my-test --trace
@@ -99,7 +128,7 @@ Agent 会收到"赔偿金额计算依据再补充一下"这条意见，重新检
 
 ---
 
-## 第 4 步：跑评测（串行执行约 16 分钟，会花几毛钱）
+## 第 5 步：跑评测（串行执行约 16 分钟，会花几毛钱）
 
 ```bash
 .venv/Scripts/python agent_eval.py                 # 全量 11 案 × 2 架构
@@ -115,7 +144,7 @@ Agent 会收到"赔偿金额计算依据再补充一下"这条意见，重新检
 
 ---
 
-## 第 5 步：其他版本（对比用）
+## 第 6 步：其他版本（对比用）
 
 ```bash
 .venv/Scripts/python labour_agent.py --demo          # v1 手写循环（零框架）
@@ -151,7 +180,15 @@ A：`.venv` 是项目专属虚拟环境，装了 langgraph 等依赖。直接用
 A：**不需要**。调用的是 DeepSeek（国内可直连）。只有两种情况要代理：① 推送 GitHub（走 `-c http.proxy=http://127.0.0.1:7893`）② 开启 LangSmith 云端追踪。
 
 **Q：跑一次花多少钱？**
-A：单轮问答约 ¥0.005–0.01（输入大部分命中缓存，命中价只有未命中的 1/120）。跑完整评测约几毛钱。加 `--trace` 能看到每次的确切估算值。
+A：分三档——
+
+| 档位 | 命令 | 成本 |
+|---|---|---|
+| **完全免费** | `selftest.py --no-api` · `test_units.py` · `agent_eval.py --rescore` · `observability.py` | ¥0（不调 LLM） |
+| 单次问答 | `agent_hitl.py --question "..."`、`--demo` | 约 ¥0.01–0.03 |
+| 全量评测 | `agent_eval.py`（11 案 × 2 架构） | 几毛钱 |
+
+单次问答便宜是因为输入大部分命中缓存——命中价只有未命中的 1/120。加 `--trace` 能看到确切估算值。
 
 **Q：终端里中文/emoji 变成乱码怎么办？**
 A：各脚本顶部都有 `sys.stdout.reconfigure(encoding="utf-8")`，正常情况下不会乱码。若仍乱码，在 Git Bash 里执行 `chcp.com 65001`，或用 Windows Terminal 替代 cmd。
