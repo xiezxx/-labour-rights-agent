@@ -1,6 +1,6 @@
 # 劳动维权咨询 Agent —— 作品集演示项目
 
-面向 **AI Agent 应用开发**的完整演示：同一业务的 **三种架构对照**——手写 ReAct 循环版、LangGraph 编排版、流水线基线版，外加一套**可自动验证的 Agent 评测**。
+面向 **AI Agent 应用开发**的完整演示：同一劳动法咨询业务的**四种实现对照**——手写 ReAct 循环版（v1）、LangGraph 编排版（v2）、LangGraph + 跨进程记忆 + 人在环审批版（v3）、流水线基线版，外加一套**可自动验证的 Agent 评测**。
 
 
 ## 项目结构
@@ -9,6 +9,7 @@
 labour-agent-demo/
 ├── labour_agent.py        # v1：手写 ReAct 循环 + Function Calling + 4 工具（零框架依赖）
 ├── langgraph_agent.py     # v2：LangGraph StateGraph 编排（工具实现直接复用 v1）
+├── agent_hitl.py          # v3：多轮记忆（Sqlite 检查点）+ 人在环审批（interrupt）
 ├── agent_eval.py          # 评测：11 案 × 2 架构，客观指标自动打分（测试集内置于此文件）
 ├── eval_results.json      # 评测明细输出（含双方完整答案，可复核）
 └── README.md
@@ -18,14 +19,17 @@ labour-agent-demo/
 
 ```bash
 python -m venv .venv
-.venv/Scripts/pip install openai python-dotenv langgraph langchain-openai   # Windows
+.venv/Scripts/pip install openai python-dotenv langgraph langchain-openai langgraph-checkpoint-sqlite
 cp .env.example .env    # 填入 DeepSeek / OpenAI 兼容 API Key
 
 .venv/Scripts/python labour_agent.py --demo           # v1 手写循环版，脚本演示
 .venv/Scripts/python langgraph_agent.py --demo        # v2 LangGraph 版，脚本演示
 .venv/Scripts/python agent_eval.py                    # 评测（11 案情 × 2 架构，约 10 分钟）
 .venv/Scripts/python agent_eval.py --rescore          # 只重算指标，不调用 LLM（改打分口径时用）
-.venv/Scripts/python agent_eval.py --case C01         # 单跑一个用例
+
+# v3：多轮记忆 + 人在环审批（--thread 即记忆单元）
+.venv/Scripts/python agent_hitl.py --thread demo --demo            # 报案情 → 审批 → 生成文书 → 追问
+.venv/Scripts/python agent_hitl.py --thread demo --show-memory     # 查看该线程的记忆内容
 ```
 
 去掉 `--demo` 即为交互模式，可多轮追问。
@@ -66,7 +70,61 @@ cp .env.example .env    # 填入 DeepSeek / OpenAI 兼容 API Key
 - **工具实现直接 `import` 自 v1**——演示"编排层换框架，业务工具零改动"的分层设计
 - 实测可见 LangGraph 会**并行执行**同一轮的多个工具调用（如同时调时效查询 + 法条检索），手写版是串行
 
-## 三、评测：Agent 版 vs 流水线版（`agent_eval.py`）
+## 三、v3 多轮记忆 + 人在环审批（`agent_hitl.py`）
+
+在 v2 编排之上加两个**生产级能力**，都是落地生产环境时的关键能力。
+
+### 1. 多轮记忆（持久化状态，跨进程）
+
+`graph.compile(checkpointer=SqliteSaver(conn))` + `config={"configurable": {"thread_id": ...}}`：
+整个会话状态（全部消息 + 中间状态）落盘到 `agent_memory.sqlite`，按 thread 隔离。
+
+**验证过的效果**——关掉程序重开，Agent 仍记得案情：
+
+```bash
+# 第一次：报案情，生成文书
+.venv/Scripts/python agent_hitl.py --thread demo-01 --demo
+# 第二次（全新进程）：不重述案情直接问
+.venv/Scripts/python agent_hitl.py --thread demo-01 --question "我的工龄是几年？月工资多少？被申请人是谁？"
+```
+
+实测第二次回答（**未经任何重述**）：
+
+> 根据我们前面的沟通，已记录的信息如下：
+> 1. **被申请人（公司）**：某某科技有限公司
+> 2. **工龄**：2年半（2.5 年）
+> 3. **月工资**：离职前12个月平均月工资 **9,000 元**
+> 基于以上信息，我已为您计算出违法解除劳动合同赔偿金为 **54,000 元**，并生成了仲裁申请书。
+
+> 为什么不用 `MemorySaver`：它只存在内存里，进程一退记忆就没了，演示不出"跨会话"。Sqlite 才有真实持久化的意义（生产环境可换 Postgres/Redis 检查点）。
+
+### 2. 人在环审批（Human-in-the-loop）
+
+**为什么需要**：生成《劳动仲裁申请书》是高风险动作——用户可能直接拿去提交仲裁委。这类动作不能让模型自主执行，必须人工把关。
+
+```python
+def review_draft(state):
+    decision = interrupt({          # 挂起整张图，把决定权交给人类
+        "action": SENSITIVE_TOOL,
+        "message": "Agent 准备生成正式《劳动仲裁申请书》，请核对要素后批准",
+        "draft": state["pending_draft"]["args"],
+    })
+    ...
+```
+
+流程与实测（两条路径都验证过）：
+
+| 人类决定 | 图的走向 | 实测结果 |
+|---|---|---|
+| **批准** | 恢复 → 执行工具 → 生成文书 | ✅ 生成带完整结构的《劳动人事争议仲裁申请书》 |
+| **否决 + 修改意见** | 恢复 → 带意见回 llm 重做 | ✅ Agent 重新检索《劳动合同法》第 47 条补强计算依据，二次审批后生成修订版 |
+
+**实现里最容易踩的两个坑（都处理了）**：
+
+1. **否决后必须补工具回执**：历史里若留下"调用过但无 ToolMessage 回应"的 `tool_call`，再调 LLM 会被 API 直接拒绝。所以否决时要为整批 `tool_call_id` 补一条"操作被用户否决，未执行"的 `ToolMessage`。
+2. **`interrupt()` 恢复后节点从头重跑**：所以 interrupt 之前的代码必须幂等——不能有副作用（写文件、发请求）。
+
+## 四、评测：Agent 版 vs 流水线版（`agent_eval.py`）
 
 **为什么不用 LLM-as-judge**：Agent 评测是行业公认难题（行为不确定、路径不唯一），而 LLM 评委本身不可靠。本评测全部用**可客观验证的指标**：
 
@@ -81,7 +139,7 @@ cp .env.example .env    # 填入 DeepSeek / OpenAI 兼容 API Key
 
 **测试集覆盖**（10 案）：信息不全的违法辞退（应追问）、信息齐全的违法辞退（不应追问，检验过度提问）、拖欠工资时效、未签合同双倍工资、主动辞职、加班费、试用期辞退、N+1 计算、协商解除、知识边界（迷你库无工伤条例，检验是否编造条文号）。
 
-## 四、评测结果（11 案 × 2 架构，2026-09-14 实测）
+## 五、评测结果（11 案 × 2 架构，2026-09-14 实测）
 
 | 指标 | Agent 版 | 流水线版 | 说明 |
 |---|---|---|---|
@@ -124,10 +182,10 @@ C06（加班费）中，流水线引用《劳动法》第 44 条——**真实�
 
 ## 下一步可扩展
 
-1. **多轮记忆**：跨会话的案情状态持久化（LangGraph checkpointer，`MemorySaver`/`SqliteSaver`）
-2. **多 Agent 分工**：检索 Agent + 计算 Agent + 文书生成 Agent 的 supervisor 编排
-3. **人在环审批**：生成仲裁申请书这类"对外动作"前加人工确认节点（LangGraph `interrupt`）
-4. **接入真实检索**：把 `search_law` 换成论文项目的混合检索（BM25 + 向量 + 知识图谱），可直接复用于论文系统的 Agentic 升级
+1. **多 Agent 分工**：检索 Agent + 计算 Agent + 文书生成 Agent 的 supervisor 编排
+2. **记忆治理**：长对话的消息裁剪/摘要（避免历史无限增长撑爆上下文）、跨 thread 的用户画像
+3. **接入真实检索**：把 `search_law` 换成论文项目的混合检索（BM25 + 向量 + 知识图谱），可直接复用于论文系统的 Agentic 升级
+4. **可观测性**：接入 LangSmith / OpenTelemetry 追踪每次工具调用与 token 成本（生产 Agent 必备）
 
 ## 说明
 
