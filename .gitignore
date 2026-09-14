@@ -3,3 +3,5 @@
 __pycache__/
 agent_memory.sqlite
 trace_log.jsonl
+*.local.md
+*.local.*

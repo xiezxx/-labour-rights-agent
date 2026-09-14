@@ -10,8 +10,10 @@ labour-agent-demo/
 ├── labour_agent.py        # v1：手写 ReAct 循环 + Function Calling + 4 工具（零框架依赖）
 ├── langgraph_agent.py     # v2：LangGraph StateGraph 编排（工具实现直接复用 v1）
 ├── agent_hitl.py          # v3：多轮记忆（Sqlite 检查点）+ 人在环审批（interrupt）
-├── observability.py       # 可观测性：本地追踪 + token/成本核算（可切换 LangSmith）
+├── observability.py       # v4：可观测性：本地追踪 + token/成本核算（可切换 LangSmith）
 ├── agent_eval.py          # 评测：11 案 × 2 架构，客观指标自动打分（测试集内置于此文件）
+├── selftest.py            # 环境自检：一条命令确认依赖/配置/API/模块是否就绪
+├── TESTING.md             # 本地测试指南（分步测试流程、演示脚本、常见问题）
 ├── eval_results.json      # 评测明细输出（含双方完整答案，可复核）
 └── README.md
 ```
@@ -23,6 +25,7 @@ python -m venv .venv
 .venv/Scripts/pip install openai python-dotenv langgraph langchain-openai langgraph-checkpoint-sqlite
 cp .env.example .env    # 填入 DeepSeek / OpenAI 兼容 API Key
 
+.venv/Scripts/python selftest.py                      # ① 先跑环境自检（依赖/配置/API 是否就绪）
 .venv/Scripts/python labour_agent.py --demo           # v1 手写循环版，脚本演示
 .venv/Scripts/python langgraph_agent.py --demo        # v2 LangGraph 版，脚本演示
 .venv/Scripts/python agent_eval.py                    # 评测（11 案情 × 2 架构，约 10 分钟）
@@ -37,7 +40,7 @@ cp .env.example .env    # 填入 DeepSeek / OpenAI 兼容 API Key
 .venv/Scripts/python observability.py                              # 自检（不调用 LLM）
 ```
 
-去掉 `--demo` 即为交互模式，可多轮追问。
+去掉 `--demo` 即为交互模式，可多轮追问。**完整的测试步骤、演示脚本与常见问题见 [TESTING.md](TESTING.md)。**
 
 ## 一、v1 手写循环版（`labour_agent.py`）
 
@@ -186,11 +189,11 @@ def review_draft(state):
 | 工具召回率 | 该调的必调工具是否都调了 | 决策正确性（金额问题必须调计算工具） |
 | 反问行为正确 | 信息不全该追问、信息齐全不该啰嗦 | Agent 专有能力（流水线结构上做不到） |
 | 金额正确率 | 答案金额是否等于程序计算值（±1 元） | 程序计算 vs LLM 心算 |
-| 引用可验证率 | 引用的每个第X条是否出现在本轮检索结果中 | 防幻觉白名单机制 |
+| 引用可验证率 | 引用的每个第X条能否回溯到知识库（兼容中文数字条号） | 防幻觉白名单机制 |
 
 **公平性设置**：流水线版拿到与 Agent 版**相同的信息**（脚本把用户补充信息一次性喂给它），它的劣势不是信息更少，而是**无法边问边查**——只检索一次、不做程序化计算、无引用白名单约束。
 
-**测试集覆盖**（10 案）：信息不全的违法辞退（应追问）、信息齐全的违法辞退（不应追问，检验过度提问）、拖欠工资时效、未签合同双倍工资、主动辞职、加班费、试用期辞退、N+1 计算、协商解除、知识边界（迷你库无工伤条例，检验是否编造条文号）。
+**测试集覆盖**（11 案）：信息不全的违法辞退（应追问）、信息齐全的违法辞退（不应追问，检验过度提问）、拖欠工资时效、未签合同双倍工资、主动辞职、加班费、试用期辞退、N+1 计算、协商解除、知识边界（迷你库无工伤条例，检验是否编造条文号）、零头工龄算例（7年8个月，检验月数取整规则）。
 
 ## 六、评测结果（11 案 × 2 架构，2026-09-14 实测）
 
